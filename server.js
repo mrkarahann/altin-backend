@@ -1,10 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-
-// Stealth plugin'i ekle
-puppeteer.use(StealthPlugin());
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium-min');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,24 +21,22 @@ app.get('/gold-prices', async (req, res) => {
   let page = null;
   
   try {
-    console.log("🔄 Harem Altın'a Puppeteer Stealth ile istek gönderiliyor...");
+    console.log("🔄 Harem Altın'a Puppeteer ile istek gönderiliyor...");
 
-    // Browser'ı başlat (Render için kritik argümanlar)
+    // Chromium'u başlat (Render için optimize edilmiş)
+    chromium.setGraphicsMode(false);
+    
     browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--single-process',
-        '--no-zygote',
-      ],
-      timeout: 60000, // 60 saniye timeout
+      args: [...chromium.args, '--single-process', '--no-zygote'],
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+      ignoreHTTPSErrors: true,
     });
 
     page = await browser.newPage();
 
-    // User-Agent ayarla (gerçek Windows Chrome)
+    // User-Agent ayarla
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
     );
@@ -56,47 +51,34 @@ app.get('/gold-prices', async (req, res) => {
       timeout: 30000,
     });
 
-    // AJAX isteğinin tamamlanması için bekle
-    console.log('⏳ AJAX isteği bekleniyor...');
-    await page.waitForTimeout(2000); // 2 saniye bekle
+    // Cloudflare challenge'ı bekle
+    console.log('⏳ Cloudflare challenge bekleniyor...');
+    await page.waitForTimeout(5000);
 
-    // Sayfa içindeki verileri çek
-    console.log('📡 Sayfa içindeki veriler çekiliyor...');
+    // API endpoint'ine POST isteği yap
+    console.log('📡 API endpoint\'ine istek gönderiliyor...');
     const response = await page.evaluate(async () => {
-      // Önce localStorage veya window objesinden veri çekmeyi dene
-      let goldData = null;
+      const formData = new URLSearchParams();
+      formData.append('dil_kodu', 'tr');
 
-      // window objesinde altın verilerini ara
-      if (window.altinData || window.goldData || window.piyasaData) {
-        goldData = window.altinData || window.goldData || window.piyasaData;
-      }
+      const fetchResponse = await fetch(
+        'https://www.haremaltin.com/dashboard/ajax/doviz',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'Referer': 'https://www.haremaltin.com/canli-piyasalar/',
+            'Origin': 'https://www.haremaltin.com',
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          body: formData.toString(),
+        }
+      );
 
-      // Eğer window'da yoksa, AJAX isteğini manuel olarak yap
-      if (!goldData) {
-        const formData = new URLSearchParams();
-        formData.append('dil_kodu', 'tr');
-
-        const fetchResponse = await fetch(
-          'https://www.haremaltin.com/dashboard/ajax/doviz',
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-              'Referer': 'https://www.haremaltin.com/canli-piyasalar/',
-              'Origin': 'https://www.haremaltin.com',
-              'X-Requested-With': 'XMLHttpRequest',
-            },
-            body: formData.toString(),
-          }
-        );
-
-        goldData = await fetchResponse.json();
-      }
-
-      return goldData;
+      return await fetchResponse.json();
     });
 
-    // Browser'ı kapat (memory limit için kritik)
+    // Browser'ı kapat
     await browser.close();
     browser = null;
     page = null;
@@ -104,11 +86,34 @@ app.get('/gold-prices', async (req, res) => {
     // Yanıtı kontrol et
     if (response && typeof response === 'object' && response.data) {
       console.log('✅ Harem Altın verisi başarıyla alındı');
-      return res.json({ data: response.data });
+      
+      // Trend hesapla (basit - gram altın fiyatına göre)
+      const gramPrice = parseFloat(
+        (response.data.ALTIN?.satis || '0')
+          .toString()
+          .replace(/\./g, '')
+          .replace(',', '.')
+      );
+      
+      // PropertiesService yerine basit bir trend hesaplama
+      // (Her istekte stable döndür, Flutter tarafında trend hesaplanacak)
+      const result = {
+        success: true,
+        trend: 'stable', // Flutter tarafında hesaplanacak
+        data: {
+          gram: response.data.ALTIN || {},
+          ceyrek: response.data.CEYREK_YENI || {},
+          yarim: response.data.YARIM_YENI || {},
+          tam: response.data.TAM_YENI || {},
+        },
+      };
+      
+      return res.json(result);
     }
 
     console.error('❌ Beklenmeyen API yanıtı formatı:', JSON.stringify(response));
     return res.status(500).json({
+      success: false,
       error: 'Beklenmeyen API yanıtı formatı',
       response: response,
     });
@@ -116,7 +121,7 @@ app.get('/gold-prices', async (req, res) => {
     console.error('❌ Harem Altın backend hatası:', error.message || error.toString());
     console.error('Stack trace:', error.stack);
 
-    // Browser'ı kapat (eğer açıksa) - memory limit için kritik
+    // Browser'ı kapat (eğer açıksa)
     if (page) {
       try {
         await page.close();
@@ -132,17 +137,8 @@ app.get('/gold-prices', async (req, res) => {
       }
     }
 
-    // Cloudflare 403 hatası kontrolü
-    if (error.message && error.message.includes('403')) {
-      console.log('Cloudflare Blocked');
-      return res.status(403).json({
-        error: 'Harem Altın sunucusuna bağlanılamadı',
-        details: 'Cloudflare Blocked',
-        status: 403,
-      });
-    }
-
     return res.status(500).json({
+      success: false,
       error: 'Harem Altın sunucusuna bağlanılamadı',
       details: error.message || String(error),
       type: error.constructor.name,
