@@ -1,7 +1,6 @@
 const express = require('express');
+const axios = require('axios');
 const cors = require('cors');
-const puppeteer = require('puppeteer-core');
-const chromium = require('@sparticuz/chromium');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,44 +9,6 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Puppeteer browser instance (singleton)
-let browser = null;
-let browserInitPromise = null;
-
-// Browser'ı başlat (lazy initialization, thread-safe)
-async function getBrowser() {
-  if (browserInitPromise) {
-    return browserInitPromise;
-  }
-
-  browserInitPromise = (async () => {
-    if (!browser) {
-      console.log('🚀 Puppeteer browser başlatılıyor (Render optimized)...');
-      try {
-        // Render için optimize edilmiş Chromium ayarları
-        chromium.setGraphicsMode(false);
-        
-        browser = await puppeteer.launch({
-          args: chromium.args,
-          defaultViewport: chromium.defaultViewport,
-          executablePath: await chromium.executablePath(),
-          headless: chromium.headless,
-          ignoreHTTPSErrors: true,
-        });
-        console.log('✅ Browser başlatıldı');
-      } catch (error) {
-        console.error('❌ Browser başlatma hatası:', error.message);
-        console.error('Stack:', error.stack);
-        browserInitPromise = null;
-        throw error;
-      }
-    }
-    return browser;
-  })();
-
-  return browserInitPromise;
-}
-
 // Basit sağlık kontrolü
 app.get('/', (req, res) => {
   res.json({ status: 'ok', message: 'Harem Altın backend proxy çalışıyor' });
@@ -55,106 +16,54 @@ app.get('/', (req, res) => {
 
 // Harem Altın proxy endpoint
 app.get('/gold-prices', async (req, res) => {
-  let page = null;
   try {
-    console.log("🔄 Harem Altın'a Puppeteer ile istek gönderiliyor...");
+    console.log("🔄 Harem Altın'a axios ile istek gönderiliyor...");
 
-    const browserInstance = await getBrowser();
-    page = await browserInstance.newPage();
-
-    // User-Agent ve diğer header'ları ayarla
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-      '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    const response = await axios.post(
+      'https://www.haremaltin.com/dashboard/ajax/doviz',
+      'dil_kodu=tr',
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Referer': 'https://www.haremaltin.com/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+          'Origin': 'https://www.haremaltin.com',
+          'Accept': 'application/json, text/javascript, */*; q=0.01',
+          'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        timeout: 20000, // 20 saniye timeout
+      }
     );
 
-    // Viewport ayarla
-    await page.setViewport({ width: 1920, height: 1080 });
-
-    // Ana sayfaya git (cookie'ler için)
-    console.log('📄 Ana sayfaya gidiliyor...');
-    await page.goto('https://www.haremaltin.com/', {
-      waitUntil: 'networkidle2',
-      timeout: 30000,
-    });
-
-    // Cloudflare challenge'ı bekle (eğer varsa)
-    console.log('⏳ Cloudflare challenge bekleniyor...');
-    await page.waitForTimeout(5000); // 5 saniye bekle
-
-    // API endpoint'ine POST isteği yap
-    console.log('📡 API endpoint\'ine istek gönderiliyor...');
-    const response = await page.evaluate(async () => {
-      const formData = new URLSearchParams();
-      formData.append('dil_kodu', 'tr');
-
-      const fetchResponse = await fetch(
-        'https://www.haremaltin.com/dashboard/ajax/doviz',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Referer': 'https://www.haremaltin.com/',
-            'Origin': 'https://www.haremaltin.com',
-            'X-Requested-With': 'XMLHttpRequest',
-          },
-          body: formData.toString(),
-        }
-      );
-
-      return await fetchResponse.json();
-    });
-
-    // Sayfayı kapat
-    await page.close();
-    page = null;
+    const data = response.data;
 
     // Yanıtı kontrol et
-    if (response && typeof response === 'object' && response.data) {
+    if (data && typeof data === 'object' && data.data) {
       console.log('✅ Harem Altın verisi başarıyla alındı');
-      return res.json({ data: response.data });
+      return res.json({ data: data.data });
     }
 
-    console.error('❌ Beklenmeyen API yanıtı formatı:', JSON.stringify(response));
+    console.error('❌ Beklenmeyen API yanıtı formatı:', JSON.stringify(data));
     return res.status(500).json({
       error: 'Beklenmeyen API yanıtı formatı',
-      response: response,
+      response: data,
     });
   } catch (error) {
     console.error('❌ Harem Altın backend hatası:', error.message || error.toString());
-    console.error('Stack trace:', error.stack);
-
-    // Sayfayı kapat (eğer açıksa)
-    if (page) {
-      try {
-        await page.close();
-      } catch (e) {
-        // Ignore
-      }
+    
+    if (error.response) {
+      console.error('Status:', error.response.status);
+      console.error('Headers:', error.response.headers);
+      console.error('Data:', error.response.data);
     }
 
-    // Browser'ı sıfırla (eğer crash olduysa)
-    if (error.message && error.message.includes('Target closed')) {
-      console.log('🔄 Browser crash oldu, yeniden başlatılacak...');
-      browser = null;
-      browserInitPromise = null;
-    }
-
-    return res.status(500).json({
+    return res.status(error.response?.status || 500).json({
       error: 'Harem Altın sunucusuna bağlanılamadı',
       details: error.message || String(error),
-      type: error.constructor.name,
+      status: error.response?.status || 500,
     });
   }
-});
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('🛑 SIGTERM sinyali alındı, browser kapatılıyor...');
-  if (browser) {
-    await browser.close();
-  }
-  process.exit(0);
 });
 
 app.listen(PORT, '0.0.0.0', () => {
