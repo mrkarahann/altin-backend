@@ -23,8 +23,13 @@ async function getBrowser() {
     if (!browser) {
       console.log('🚀 Puppeteer browser başlatılıyor...');
       try {
+        // Chrome executable path'i kontrol et
+        const executablePath = puppeteer.executablePath();
+        console.log('📦 Chrome path:', executablePath);
+        
         browser = await puppeteer.launch({
           headless: true,
+          executablePath: executablePath, // Açıkça belirt
           args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -34,12 +39,36 @@ async function getBrowser() {
             '--no-zygote',
             '--disable-gpu',
             '--single-process', // Render free tier için önemli
+            '--disable-extensions',
+            '--disable-background-networking',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-breakpad',
+            '--disable-client-side-phishing-detection',
+            '--disable-component-update',
+            '--disable-default-apps',
+            '--disable-features=TranslateUI',
+            '--disable-hang-monitor',
+            '--disable-ipc-flooding-protection',
+            '--disable-popup-blocking',
+            '--disable-prompt-on-repost',
+            '--disable-renderer-backgrounding',
+            '--disable-sync',
+            '--metrics-recording-only',
+            '--mute-audio',
+            '--no-default-browser-check',
+            '--no-first-run',
+            '--safebrowsing-disable-auto-update',
+            '--enable-automation',
+            '--password-store=basic',
+            '--use-mock-keychain',
           ],
           timeout: 60000, // 60 saniye timeout
         });
         console.log('✅ Browser başlatıldı');
       } catch (error) {
         console.error('❌ Browser başlatma hatası:', error.message);
+        console.error('Stack:', error.stack);
         browserInitPromise = null;
         throw error;
       }

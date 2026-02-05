@@ -4,6 +4,7 @@
   "description": "Harem Altın proxy backend",
   "main": "server.js",
   "scripts": {
+    "build": "npx puppeteer browsers install chrome",
     "start": "node server.js"
   },
   "dependencies": {
