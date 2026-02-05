@@ -1,8 +1,6 @@
 const express = require('express');
-const axios = require('axios');
 const cors = require('cors');
-const { CookieJar } = require('tough-cookie');
-const { wrapper } = require('axios-cookiejar-support');
+const puppeteer = require('puppeteer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,9 +9,29 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Cookie jar oluştur
-const cookieJar = new CookieJar();
-const axiosWithCookies = wrapper(axios.create({ jar: cookieJar }));
+// Puppeteer browser instance (singleton)
+let browser = null;
+
+// Browser'ı başlat (lazy initialization)
+async function getBrowser() {
+  if (!browser) {
+    console.log('🚀 Puppeteer browser başlatılıyor...');
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu',
+      ],
+    });
+    console.log('✅ Browser başlatıldı');
+  }
+  return browser;
+}
 
 // Basit sağlık kontrolü
 app.get('/', (req, res) => {
@@ -22,86 +40,82 @@ app.get('/', (req, res) => {
 
 // Harem Altın proxy endpoint
 app.get('/gold-prices', async (req, res) => {
+  let page = null;
   try {
-    console.log("🔄 Harem Altın'a istek gönderiliyor (backend)...");
+    console.log("🔄 Harem Altın'a Puppeteer ile istek gönderiliyor...");
 
-    // Önce ana sayfaya gidip cookie'leri al
-    try {
-      await axiosWithCookies.get('https://www.haremaltin.com/', {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-            '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-          'Accept':
-            'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-          'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'none',
-          'Sec-Fetch-User': '?1',
-          'Cache-Control': 'max-age=0',
-        },
-        timeout: 10000,
-      });
-      console.log('✅ Ana sayfa ziyareti başarılı, cookie\'ler alındı');
-    } catch (e) {
-      console.log('⚠️ Ana sayfa ziyareti başarısız, devam ediliyor...');
-    }
+    const browserInstance = await getBrowser();
+    page = await browserInstance.newPage();
 
-    // Şimdi API endpoint'ine istek at
-    const response = await axiosWithCookies.post(
-      'https://www.haremaltin.com/dashboard/ajax/doviz',
-      'dil_kodu=tr',
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Referer': 'https://www.haremaltin.com/',
-          'Origin': 'https://www.haremaltin.com',
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-            '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-          'Accept': 'application/json, text/javascript, */*; q=0.01',
-          'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'X-Requested-With': 'XMLHttpRequest',
-          'Sec-Fetch-Dest': 'empty',
-          'Sec-Fetch-Mode': 'cors',
-          'Sec-Fetch-Site': 'same-origin',
-          'Connection': 'keep-alive',
-        },
-        timeout: 20000,
-        maxRedirects: 5,
-      }
+    // User-Agent ve diğer header'ları ayarla
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
     );
 
-    const data = response.data;
+    // Viewport ayarla
+    await page.setViewport({ width: 1920, height: 1080 });
 
-    if (data && typeof data === 'object' && data.data) {
+    // Ana sayfaya git (cookie'ler için)
+    console.log('📄 Ana sayfaya gidiliyor...');
+    await page.goto('https://www.haremaltin.com/', {
+      waitUntil: 'networkidle2',
+      timeout: 30000,
+    });
+
+    // Cloudflare challenge'ı bekle (eğer varsa)
+    await page.waitForTimeout(3000);
+
+    // API endpoint'ine POST isteği yap
+    console.log('📡 API endpoint\'ine istek gönderiliyor...');
+    const response = await page.evaluate(async () => {
+      const formData = new URLSearchParams();
+      formData.append('dil_kodu', 'tr');
+
+      const fetchResponse = await fetch(
+        'https://www.haremaltin.com/dashboard/ajax/doviz',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Referer': 'https://www.haremaltin.com/',
+            'Origin': 'https://www.haremaltin.com',
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          body: formData.toString(),
+        }
+      );
+
+      return await fetchResponse.json();
+    });
+
+    // Sayfayı kapat
+    await page.close();
+    page = null;
+
+    // Yanıtı kontrol et
+    if (response && typeof response === 'object' && response.data) {
       console.log('✅ Harem Altın verisi başarıyla alındı');
-      // Flutter tarafıyla uyumlu format: { data: {...} }
-      return res.json({ data: data.data });
+      return res.json({ data: response.data });
     }
 
-    console.error('❌ Beklenmeyen API yanıtı formatı (backend)');
+    console.error('❌ Beklenmeyen API yanıtı formatı');
     return res.status(500).json({
       error: 'Beklenmeyen API yanıtı formatı',
+      response: response,
     });
   } catch (error) {
-    console.error(
-      '❌ Harem Altın backend hatası:',
-      error.message || error.toString()
-    );
-    
-    // Daha detaylı hata bilgisi
-    if (error.response) {
-      console.error('Status:', error.response.status);
-      console.error('Headers:', error.response.headers);
-      console.error('Data:', error.response.data);
+    console.error('❌ Harem Altın backend hatası:', error.message || error.toString());
+
+    // Sayfayı kapat (eğer açıksa)
+    if (page) {
+      try {
+        await page.close();
+      } catch (e) {
+        // Ignore
+      }
     }
-    
+
     const status = error.response?.status || 500;
 
     return res.status(status).json({
@@ -110,6 +124,15 @@ app.get('/gold-prices', async (req, res) => {
       status: status,
     });
   }
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('🛑 SIGTERM sinyali alındı, browser kapatılıyor...');
+  if (browser) {
+    await browser.close();
+  }
+  process.exit(0);
 });
 
 app.listen(PORT, '0.0.0.0', () => {
