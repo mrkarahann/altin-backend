@@ -11,26 +11,43 @@ app.use(express.urlencoded({ extended: true }));
 
 // Puppeteer browser instance (singleton)
 let browser = null;
+let browserInitPromise = null;
 
-// Browser'ı başlat (lazy initialization)
+// Browser'ı başlat (lazy initialization, thread-safe)
 async function getBrowser() {
-  if (!browser) {
-    console.log('🚀 Puppeteer browser başlatılıyor...');
-    browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-      ],
-    });
-    console.log('✅ Browser başlatıldı');
+  if (browserInitPromise) {
+    return browserInitPromise;
   }
-  return browser;
+
+  browserInitPromise = (async () => {
+    if (!browser) {
+      console.log('🚀 Puppeteer browser başlatılıyor...');
+      try {
+        browser = await puppeteer.launch({
+          headless: true,
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu',
+            '--single-process', // Render free tier için önemli
+          ],
+          timeout: 60000, // 60 saniye timeout
+        });
+        console.log('✅ Browser başlatıldı');
+      } catch (error) {
+        console.error('❌ Browser başlatma hatası:', error.message);
+        browserInitPromise = null;
+        throw error;
+      }
+    }
+    return browser;
+  })();
+
+  return browserInitPromise;
 }
 
 // Basit sağlık kontrolü
@@ -64,7 +81,8 @@ app.get('/gold-prices', async (req, res) => {
     });
 
     // Cloudflare challenge'ı bekle (eğer varsa)
-    await page.waitForTimeout(3000);
+    console.log('⏳ Cloudflare challenge bekleniyor...');
+    await page.waitForTimeout(5000); // 5 saniye bekle
 
     // API endpoint'ine POST isteği yap
     console.log('📡 API endpoint\'ine istek gönderiliyor...');
@@ -99,13 +117,14 @@ app.get('/gold-prices', async (req, res) => {
       return res.json({ data: response.data });
     }
 
-    console.error('❌ Beklenmeyen API yanıtı formatı');
+    console.error('❌ Beklenmeyen API yanıtı formatı:', JSON.stringify(response));
     return res.status(500).json({
       error: 'Beklenmeyen API yanıtı formatı',
       response: response,
     });
   } catch (error) {
     console.error('❌ Harem Altın backend hatası:', error.message || error.toString());
+    console.error('Stack trace:', error.stack);
 
     // Sayfayı kapat (eğer açıksa)
     if (page) {
@@ -116,12 +135,17 @@ app.get('/gold-prices', async (req, res) => {
       }
     }
 
-    const status = error.response?.status || 500;
+    // Browser'ı sıfırla (eğer crash olduysa)
+    if (error.message && error.message.includes('Target closed')) {
+      console.log('🔄 Browser crash oldu, yeniden başlatılacak...');
+      browser = null;
+      browserInitPromise = null;
+    }
 
-    return res.status(status).json({
+    return res.status(500).json({
       error: 'Harem Altın sunucusuna bağlanılamadı',
       details: error.message || String(error),
-      status: status,
+      type: error.constructor.name,
     });
   }
 });
