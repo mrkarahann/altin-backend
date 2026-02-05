@@ -1,6 +1,10 @@
 const express = require('express');
-const axios = require('axios');
 const cors = require('cors');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+
+// Stealth plugin'i ekle
+puppeteer.use(StealthPlugin());
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,46 +20,120 @@ app.get('/', (req, res) => {
 
 // Harem Altın proxy endpoint
 app.get('/gold-prices', async (req, res) => {
+  let browser = null;
+  let page = null;
+  
   try {
-    console.log("🔄 Harem Altın'a axios ile istek gönderiliyor...");
+    console.log("🔄 Harem Altın'a Puppeteer Stealth ile istek gönderiliyor...");
 
-    // Rastgele delay ekle (100-500ms) - gerçek insan davranışına benzesin
-    const delay = Math.floor(Math.random() * 400) + 100; // 100-500ms arası
-    await new Promise(resolve => setTimeout(resolve, delay));
+    // Browser'ı başlat (Render için kritik argümanlar)
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--single-process',
+        '--no-zygote',
+      ],
+      timeout: 60000, // 60 saniye timeout
+    });
 
-    const response = await axios.post(
-      'https://www.haremaltin.com/dashboard/ajax/doviz',
-      'dil_kodu=tr',
-      {
-        headers: {
-          'Accept': 'application/json, text/javascript, */*; q=0.01',
-          'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'Origin': 'https://www.haremaltin.com',
-          'Referer': 'https://www.haremaltin.com/canli-piyasalar/',
-          'X-Requested-With': 'XMLHttpRequest',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        },
-        timeout: 20000, // 20 saniye timeout
-      }
+    page = await browser.newPage();
+
+    // User-Agent ayarla (gerçek Windows Chrome)
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
     );
 
-    const data = response.data;
+    // Viewport ayarla
+    await page.setViewport({ width: 1920, height: 1080 });
+
+    // Sayfaya git
+    console.log('📄 Canlı piyasalar sayfasına gidiliyor...');
+    await page.goto('https://www.haremaltin.com/canli-piyasalar/', {
+      waitUntil: 'networkidle2',
+      timeout: 30000,
+    });
+
+    // AJAX isteğinin tamamlanması için bekle
+    console.log('⏳ AJAX isteği bekleniyor...');
+    await page.waitForTimeout(2000); // 2 saniye bekle
+
+    // Sayfa içindeki verileri çek
+    console.log('📡 Sayfa içindeki veriler çekiliyor...');
+    const response = await page.evaluate(async () => {
+      // Önce localStorage veya window objesinden veri çekmeyi dene
+      let goldData = null;
+
+      // window objesinde altın verilerini ara
+      if (window.altinData || window.goldData || window.piyasaData) {
+        goldData = window.altinData || window.goldData || window.piyasaData;
+      }
+
+      // Eğer window'da yoksa, AJAX isteğini manuel olarak yap
+      if (!goldData) {
+        const formData = new URLSearchParams();
+        formData.append('dil_kodu', 'tr');
+
+        const fetchResponse = await fetch(
+          'https://www.haremaltin.com/dashboard/ajax/doviz',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'Referer': 'https://www.haremaltin.com/canli-piyasalar/',
+              'Origin': 'https://www.haremaltin.com',
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+            body: formData.toString(),
+          }
+        );
+
+        goldData = await fetchResponse.json();
+      }
+
+      return goldData;
+    });
+
+    // Browser'ı kapat (memory limit için kritik)
+    await browser.close();
+    browser = null;
+    page = null;
 
     // Yanıtı kontrol et
-    if (data && typeof data === 'object' && data.data) {
+    if (response && typeof response === 'object' && response.data) {
       console.log('✅ Harem Altın verisi başarıyla alındı');
-      return res.json({ data: data.data });
+      return res.json({ data: response.data });
     }
 
-    console.error('❌ Beklenmeyen API yanıtı formatı:', JSON.stringify(data));
+    console.error('❌ Beklenmeyen API yanıtı formatı:', JSON.stringify(response));
     return res.status(500).json({
       error: 'Beklenmeyen API yanıtı formatı',
-      response: data,
+      response: response,
     });
   } catch (error) {
+    console.error('❌ Harem Altın backend hatası:', error.message || error.toString());
+    console.error('Stack trace:', error.stack);
+
+    // Browser'ı kapat (eğer açıksa) - memory limit için kritik
+    if (page) {
+      try {
+        await page.close();
+      } catch (e) {
+        // Ignore
+      }
+    }
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (e) {
+        // Ignore
+      }
+    }
+
     // Cloudflare 403 hatası kontrolü
-    if (error.response?.status === 403) {
+    if (error.message && error.message.includes('403')) {
       console.log('Cloudflare Blocked');
       return res.status(403).json({
         error: 'Harem Altın sunucusuna bağlanılamadı',
@@ -64,19 +142,10 @@ app.get('/gold-prices', async (req, res) => {
       });
     }
 
-    // Diğer hatalar için detaylı log
-    console.error('❌ Harem Altın backend hatası:', error.message || error.toString());
-    
-    if (error.response) {
-      console.error('Status:', error.response.status);
-      console.error('Headers:', error.response.headers);
-      console.error('Data:', error.response.data);
-    }
-
-    return res.status(error.response?.status || 500).json({
+    return res.status(500).json({
       error: 'Harem Altın sunucusuna bağlanılamadı',
       details: error.message || String(error),
-      status: error.response?.status || 500,
+      type: error.constructor.name,
     });
   }
 });
