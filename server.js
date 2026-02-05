@@ -23,13 +23,19 @@ async function getBrowser() {
     if (!browser) {
       console.log('🚀 Puppeteer browser başlatılıyor...');
       try {
-        // Chrome executable path'i kontrol et
-        const executablePath = puppeteer.executablePath();
-        console.log('📦 Chrome path:', executablePath);
+        // Chrome executable path'i kontrol et (opsiyonel - Puppeteer otomatik bulacak)
+        let executablePath;
+        try {
+          executablePath = puppeteer.executablePath();
+          console.log('📦 Chrome path bulundu:', executablePath);
+        } catch (e) {
+          console.log('⚠️ Chrome path bulunamadı, Puppeteer otomatik bulacak');
+          executablePath = undefined;
+        }
         
         browser = await puppeteer.launch({
           headless: true,
-          executablePath: executablePath, // Açıkça belirt
+          // executablePath belirtme - Puppeteer kendi bulsun
           args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
