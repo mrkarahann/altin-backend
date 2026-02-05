@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -21,55 +22,17 @@ async function getBrowser() {
 
   browserInitPromise = (async () => {
     if (!browser) {
-      console.log('🚀 Puppeteer browser başlatılıyor...');
+      console.log('🚀 Puppeteer browser başlatılıyor (Render optimized)...');
       try {
-        // Chrome executable path'i kontrol et (opsiyonel - Puppeteer otomatik bulacak)
-        let executablePath;
-        try {
-          executablePath = puppeteer.executablePath();
-          console.log('📦 Chrome path bulundu:', executablePath);
-        } catch (e) {
-          console.log('⚠️ Chrome path bulunamadı, Puppeteer otomatik bulacak');
-          executablePath = undefined;
-        }
+        // Render için optimize edilmiş Chromium ayarları
+        chromium.setGraphicsMode(false);
         
         browser = await puppeteer.launch({
-          headless: true,
-          // executablePath belirtme - Puppeteer kendi bulsun
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu',
-            '--single-process', // Render free tier için önemli
-            '--disable-extensions',
-            '--disable-background-networking',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-breakpad',
-            '--disable-client-side-phishing-detection',
-            '--disable-component-update',
-            '--disable-default-apps',
-            '--disable-features=TranslateUI',
-            '--disable-hang-monitor',
-            '--disable-ipc-flooding-protection',
-            '--disable-popup-blocking',
-            '--disable-prompt-on-repost',
-            '--disable-renderer-backgrounding',
-            '--disable-sync',
-            '--metrics-recording-only',
-            '--mute-audio',
-            '--no-default-browser-check',
-            '--no-first-run',
-            '--safebrowsing-disable-auto-update',
-            '--enable-automation',
-            '--password-store=basic',
-            '--use-mock-keychain',
-          ],
-          timeout: 60000, // 60 saniye timeout
+          args: chromium.args,
+          defaultViewport: chromium.defaultViewport,
+          executablePath: await chromium.executablePath(),
+          headless: chromium.headless,
+          ignoreHTTPSErrors: true,
         });
         console.log('✅ Browser başlatıldı');
       } catch (error) {
